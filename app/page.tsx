@@ -188,6 +188,7 @@ const PlantCartoon = ({ type, size = 90 }: { type: string; size?: number }) => {
 const todayStr = () => new Date().toISOString().split("T")[0];
 const fmt = (d: string) => new Date(d).toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" });
 const daysSince = (d: string) => Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
+const PRIORITY_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
 
 const MILESTONE_CATEGORIES: { value: MilestoneCategory; label: string; emoji: string; color: string }[] = [
   { value:"growth",  label:"Growth",  emoji:"🌱", color:"#4a9e65" },
@@ -444,9 +445,7 @@ export default function PlantJournalPage() {
   const [exploreLoading, setExploreLoading] = useState(false);
   const [exploreLoaded, setExploreLoaded]   = useState(false);
   const [searchQuery, setSearchQuery]       = useState("");
-  // myReactions: plantId → emoji I reacted with
   const [myReactions, setMyReactions]       = useState<Record<string, string>>({});
-  // reactionCounts: plantId → { emoji → count }
   const [rxCounts, setRxCounts]             = useState<Record<string, Record<string, number>>>({});
   const [myFollows, setMyFollows]           = useState<Set<string>>(new Set());
   const [visitingGarden, setVisitingGarden] = useState<PublicGarden | null>(null);
@@ -493,14 +492,12 @@ export default function PlantJournalPage() {
   useEffect(() => {
     let mounted = true;
 
-    // Safety net: if nothing resolves in 5s, stop showing the splash screen
     const safetyTimer = setTimeout(() => {
       if (mounted) setAuthReady(true);
     }, 5000);
 
-    // Subscribe first so we never miss an event that fires before getSession returns
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event: AuthChangeEvent, session: Session | null) => {
-    if (!mounted) return;
+      if (!mounted) return;
       if (session?.user) {
         const u: User = {
           id: session.user.id, email: session.user.email ?? "",
@@ -508,25 +505,19 @@ export default function PlantJournalPage() {
         };
         setUser(u);
         if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {
-          loadUserData(u.id); // intentionally not awaited — let UI unblock
+          loadUserData(u.id);
         }
       } else {
         setUser(null);
         setPlants([]); setGrowth([]); setMilestones([]);
       }
-      // Always unblock the splash on any auth event
       if (mounted) setAuthReady(true);
     });
 
-    // Then check for an existing session
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then((result) => {
       if (!mounted) return;
-      // If onAuthStateChange already fired (INITIAL_SESSION), this is a no-op.
-      // If there's no session at all, we still need to unblock the splash.
-      if (!session) setAuthReady(true);
-      // If there is a session, onAuthStateChange will have fired or will fire shortly.
+      if (!result.data.session) setAuthReady(true);
     }).catch(() => {
-      // Network error — show auth screen rather than hanging
       if (mounted) setAuthReady(true);
     });
 
@@ -542,7 +533,6 @@ export default function PlantJournalPage() {
     if (!user || exploreLoaded) return;
     setExploreLoading(true);
 
-    // All plants not owned by me
     const { data: allPlants } = await supabase
       .from("plants").select("*")
       .neq("user_id", user.id)
@@ -552,7 +542,6 @@ export default function PlantJournalPage() {
       setExploreLoading(false); setExploreLoaded(true); return;
     }
 
-    // Group by user
     const byUser: Record<string, PlantProfile[]> = {};
     for (const row of allPlants) {
       if (!byUser[row.user_id]) byUser[row.user_id] = [];
@@ -560,12 +549,10 @@ export default function PlantJournalPage() {
     }
     const userIds = Object.keys(byUser);
 
-    // Display names from profiles table
     const { data: profiles } = await supabase.from("profiles").select("id,display_name").in("id", userIds);
     const nameMap: Record<string, string> = {};
     (profiles ?? []).forEach((p: any) => { nameMap[p.id] = p.display_name ?? "Gardener"; });
 
-    // Follower counts
     const { data: followData } = await supabase.from("follows").select("following_id").in("following_id", userIds);
     const followerMap: Record<string, number> = {};
     (followData ?? []).forEach((f: any) => { followerMap[f.following_id] = (followerMap[f.following_id] ?? 0) + 1; });
@@ -577,11 +564,9 @@ export default function PlantJournalPage() {
       followerCount: followerMap[uid] ?? 0,
     })));
 
-    // My follows
     const { data: myFollowData } = await supabase.from("follows").select("following_id").eq("follower_id", user.id);
     setMyFollows(new Set((myFollowData ?? []).map((f: any) => f.following_id)));
 
-    // Reactions for all these plants
     const plantIds = allPlants.map((p: any) => p.id);
     const { data: rxData } = await supabase.from("reactions").select("plant_id,emoji,user_id").in("plant_id", plantIds);
     const myRx: Record<string, string> = {};
@@ -805,14 +790,14 @@ export default function PlantJournalPage() {
     if (msFilter==="done") return m.achieved;
     if (msFilter==="all")  return !m.achieved;
     return m.category===msFilter && !m.achieved;
-  }).sort((a,b) => ({high:0,medium:1,low:2}[a.priority]) - ({high:0,medium:1,low:2}[b.priority]));
+  }).sort((a, b) => (PRIORITY_RANK[a.priority] ?? 0) - (PRIORITY_RANK[b.priority] ?? 0));
 
   const filteredGardens = publicGardens.filter(g =>
     g.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
     g.plants.some(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.type.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
-  // ── Add plant modal (shared) ──────────────────────────────────────────────
+  // ── Add plant modal ───────────────────────────────────────────────────────
   const AddPlantModal = () => (
     <div className="overlay" onClick={() => setAddingPlant(false)}>
       <div className="modal" onClick={e => e.stopPropagation()}>
@@ -944,7 +929,6 @@ export default function PlantJournalPage() {
           </div>
           <div className="content">
             <div className="visit-banner">👁 Visiting {visitingGarden.displayName}&rsquo;s plant — read only</div>
-
             <div className="hero">
               <PlantCartoon type={visitingPlant.type} size={78}/>
               <div>
@@ -957,7 +941,6 @@ export default function PlantJournalPage() {
                 </div>
               </div>
             </div>
-
             <div className="card">
               <div className="ctitle">React</div>
               <div className="rx-row">
@@ -968,7 +951,6 @@ export default function PlantJournalPage() {
                 ))}
               </div>
             </div>
-
             {visitLoading ? (
               <div className="loading"><div className="spinner"/><span>Loading journal…</span></div>
             ) : (
@@ -989,7 +971,6 @@ export default function PlantJournalPage() {
                     ))
                   }
                 </div>
-
                 <div className="card">
                   <div className="ctitle">⭐ Milestones ({visitMs.length})</div>
                   {visitMs.length===0
@@ -1028,7 +1009,6 @@ export default function PlantJournalPage() {
   // ══════════════════════════════════════════════════════════════════════════
   if (view==="visitGarden" && visitingGarden) {
     const isFollowing = myFollows.has(visitingGarden.userId);
-    const initials = visitingGarden.displayName.slice(0,2).toUpperCase();
     return (
       <>
         <style>{css}</style>
@@ -1079,7 +1059,7 @@ export default function PlantJournalPage() {
   if (view==="garden") {
     const needWater = plants.filter(p => daysSince(p.lastWatered)>=p.waterFrequency).length;
     const msDue     = milestones.filter(m => !m.achieved && m.date<=todayStr()).length;
-    const initials  = user.name.split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2);
+    const userInitials = user.name.split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0,2);
 
     return (
       <>
@@ -1095,7 +1075,7 @@ export default function PlantJournalPage() {
               </div>
             </div>
             <div className="hright">
-              <button className="havatar" onClick={() => setShowUserMenu(v=>!v)}>{initials}</button>
+              <button className="havatar" onClick={() => setShowUserMenu(v=>!v)}>{userInitials}</button>
             </div>
           </div>
 
@@ -1109,7 +1089,6 @@ export default function PlantJournalPage() {
             </div>
           )}
 
-          {/* Top tabs */}
           <div className="gnav">
             <button className={`gnbtn ${topTab==="myGarden"?"active":""}`} onClick={() => setTopTab("myGarden")}>
               <span className="nicon">🪴</span>My Garden
@@ -1119,7 +1098,6 @@ export default function PlantJournalPage() {
             </button>
           </div>
 
-          {/* ── MY GARDEN ── */}
           {topTab==="myGarden" && (
             plants.length===0 ? (
               <div className="empty">
@@ -1163,7 +1141,6 @@ export default function PlantJournalPage() {
             )
           )}
 
-          {/* ── EXPLORE ── */}
           {topTab==="explore" && (
             <div className="content">
               <div className="search-wrap">
@@ -1171,7 +1148,6 @@ export default function PlantJournalPage() {
                 <input className="search-input" placeholder="Search gardeners or plant types…"
                   value={searchQuery} onChange={e => setSearchQuery(e.target.value)}/>
               </div>
-
               {exploreLoading ? (
                 <div className="loading"><div className="spinner"/><span>Finding gardens…</span></div>
               ) : filteredGardens.length===0 ? (
@@ -1188,12 +1164,11 @@ export default function PlantJournalPage() {
                 <div className="explore-grid">
                   {filteredGardens.map(garden => {
                     const isFollowing = myFollows.has(garden.userId);
-                    const initials = garden.displayName.slice(0,2).toUpperCase();
+                    const gardenInitials = garden.displayName.slice(0,2).toUpperCase();
                     return (
                       <div key={garden.userId} className="gcard">
-                        {/* Header */}
                         <div className="gcard-header">
-                          <div className="gcard-avatar">{initials}</div>
+                          <div className="gcard-avatar">{gardenInitials}</div>
                           <div style={{flex:1}}>
                             <div className="gcard-name">{garden.displayName}</div>
                             <div className="gcard-meta">{garden.plants.length} plant{garden.plants.length!==1?"s":""} · {garden.followerCount} follower{garden.followerCount!==1?"s":""}</div>
@@ -1202,8 +1177,6 @@ export default function PlantJournalPage() {
                             {isFollowing?"✓":"+ Follow"}
                           </button>
                         </div>
-
-                        {/* Plant thumbnails */}
                         {garden.plants.length>0 && (
                           <div className="gcard-thumbs">
                             {garden.plants.slice(0,4).map(p => (
@@ -1220,8 +1193,6 @@ export default function PlantJournalPage() {
                             )}
                           </div>
                         )}
-
-                        {/* Reactions for the first plant */}
                         {garden.plants[0] && (() => {
                           const p = garden.plants[0];
                           const counts = rxCounts[p.id] ?? {};
@@ -1239,7 +1210,6 @@ export default function PlantJournalPage() {
                             </div>
                           );
                         })()}
-
                         <button className="btn btn-outline btn-sm" onClick={() => openVisitGarden(garden)}>
                           Visit garden →
                         </button>
@@ -1288,7 +1258,6 @@ export default function PlantJournalPage() {
           ))}
         </nav>
 
-        {/* HOME */}
         {tab==="home" && (
           <div className="content">
             <div className="hero">
@@ -1303,7 +1272,6 @@ export default function PlantJournalPage() {
                 </div>
               </div>
             </div>
-
             <div className={`wbanner ${needs?"needs":"ok"}`}>
               <div className="wicon">{needs?"💧":"✅"}</div>
               <div style={{flex:1}}>
@@ -1315,13 +1283,11 @@ export default function PlantJournalPage() {
                 </button>
               </div>
             </div>
-
             <div className="stats">
               <div className="stat"><div className="snum">{plantGrowth.length}</div><div className="slbl">Log entries</div></div>
               <div className="stat"><div className="snum">{plantMilestones.filter(m=>m.achieved).length}/{plantMilestones.length}</div><div className="slbl">Milestones</div></div>
               <div className="stat"><div className="snum">{daysSince(activePlant.adopted)}</div><div className="slbl">Days together</div></div>
             </div>
-
             {plantGrowth[0] && (
               <div className="card">
                 <div className="ctitle">🌱 Latest entry</div>
@@ -1335,7 +1301,6 @@ export default function PlantJournalPage() {
                 </div>
               </div>
             )}
-
             {highPri.length>0 && (
               <div className="card">
                 <div className="ctitle">🔴 Needs attention</div>
@@ -1354,7 +1319,6 @@ export default function PlantJournalPage() {
                 })}
               </div>
             )}
-
             {plantGrowth.length===0 && plantMilestones.length===0 && (
               <div className="card" style={{textAlign:"center",padding:"28px 18px"}}>
                 <div style={{fontSize:36,marginBottom:8}}>✍️</div>
@@ -1365,7 +1329,6 @@ export default function PlantJournalPage() {
           </div>
         )}
 
-        {/* GROWTH */}
         {tab==="growth" && (
           <div className="content">
             <div className="card">
@@ -1407,7 +1370,6 @@ export default function PlantJournalPage() {
           </div>
         )}
 
-        {/* MILESTONES */}
         {tab==="milestones" && (
           <div className="content">
             <div className="card">
@@ -1442,7 +1404,6 @@ export default function PlantJournalPage() {
               </div>
               <button className="btn btn-sage" onClick={addMilestone}>+ Add milestone</button>
             </div>
-
             <div className="card">
               <div className="ctitle">⭐ Milestones ({plantMilestones.length})</div>
               <div className="ftabs">
@@ -1494,7 +1455,6 @@ export default function PlantJournalPage() {
           </div>
         )}
 
-        {/* PROFILE */}
         {tab==="profile" && (
           <div className="content">
             <div className="hero" style={{flexDirection:"column",alignItems:"center",gap:10}}>
@@ -1504,7 +1464,6 @@ export default function PlantJournalPage() {
                 <div className="hspp">{editingProfile&&draftProfile?draftProfile.species:activePlant.species}</div>
               </div>
             </div>
-
             {!editingProfile ? (
               <div className="card">
                 <div className="ctitle">🌱 Profile</div>
@@ -1583,7 +1542,6 @@ export default function PlantJournalPage() {
           </div>
         )}
 
-        {/* Achieve modal */}
         {achievingId && (
           <div className="overlay">
             <div className="modal">
