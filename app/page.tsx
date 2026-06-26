@@ -500,7 +500,7 @@ export default function PlantJournalPage() {
 
     // Subscribe first so we never miss an event that fires before getSession returns
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event: AuthChangeEvent, session: Session | null) => {
-      if (!mounted) return;
+    if (!mounted) return;
       if (session?.user) {
         const u: User = {
           id: session.user.id, email: session.user.email ?? "",
